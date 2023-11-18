@@ -1,51 +1,56 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>
+#include <string.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <errno.h>
 #include <sys/wait.h>
 #include <sys/resource.h>
 
-// Incluindo o header "vector.h" para facilitar a manipulação de filas
-#include "vector.h"
+#define MAX_PROCESS_ARRAY_SIZE 25
+#define MAX_PROCESS_NAME_SIZE 250
+#define ARQUIVO "process_file.c"
 
-#define PROCESS_ARRAY_SIZE 10
-#define PROCESS_NAME_SIZE 50
 
-// Definindo uma estrutura para armazenar informações sobre processos
+// Estrutura para armazenar informações sobre o processo
 struct process_info
 {
     pid_t pid;                        // PID do processo
-    time_t start_time;
     int priority;                     // Prioridade do processo
-    char name[PROCESS_NAME_SIZE + 1]; // Nome do processo (limitado a PROCESS_NAME_SIZE caracteres)
+    time_t start_time;                // Tempo de Inicio
 };
 
 // Variáveis globais
-FILE *fptr;                      // Arquivo com as informacoes de processos
+FILE *fptr;                      // Arquivo com as informacoes dos processos
 struct process_info *proc_atual; // Ponteiro para o processo atual
-Vector process_array;            // Vetor para armazenar informações dos processos
-Vector tickets;                  // Vetor para armazenar "tickets" usados no escalonamento
 
-int alarm_times = 0;
+size_t process_array_size = 0;
+struct process_info process_array[MAX_PROCESS_ARRAY_SIZE];  // Vetor para armazenar informações dos processos
+
+int alarm_times = 0;            // Numero de vezes que houve o signal de alarm 
+time_t start_turnaround;        // Tempo de inicio do programa
 
 
 // Função para criar um processo e adicionar ao vetor process_array
-void create_process(struct process_info * p_info){
+void create_process(char * exec_name, struct process_info * p_info){
     pid_t pid = fork();
     if (pid == 0)
     {
-        execl(p_info->name, "", NULL);
+        execl(exec_name, "", NULL);
         exit(0);
     }
     else
     {
-        kill(pid, SIGSTOP); // Envia um sinal para interromper a si mesmo
+        kill(pid, SIGSTOP); // Envia um sinal para interromper o processo filho
         p_info->pid = pid;
-        time(&(p_info->start_time));
-        printf("[Processo %d] Nome: %s, Prioridade %d\n", pid, p_info->name, p_info->priority);
-        vector_push_back(&process_array, p_info); // Coloca o processo filho na fila de execução
+
+        if(process_array_size < MAX_PROCESS_ARRAY_SIZE)
+            process_array[process_array_size++] = *p_info;
+        else
+            printf("Limite de processos atigindo\n");
+        
+        // printf("[Processo %d] Prioridade %d, Executavel: %s\n", pid, p_info->priority, exec_name);
     }   
 }
 
@@ -53,55 +58,65 @@ void create_process(struct process_info * p_info){
 void remove_process(struct process_info *p_info)
 {
     int i;
-    for (i = 0; i < process_array.size; i++)
+    for (i = 0; i < process_array_size; i++)
     {
-        if (p_info->pid == ((struct process_info *)vector_get(&process_array, i))->pid)
+        struct process_info p_i = process_array[i];
+        if (p_info->pid == p_i.pid)
         {
-            vector_erase(&process_array, i);
+            size_t elem_size = sizeof(struct process_info);
+            process_array_size--;
+            memcpy(&process_array[i], &process_array[i+1], (process_array_size-i) * elem_size);
             break;
         }
     }
+
 }
 
 // Função para escolher um processo com base em "tickets" de acordo com a prioridade
 struct process_info *escolhe_processo()
 {
     int i, j;
-    struct process_info *p_info;
+    struct process_info * p_info;
 
-    vector_clear(&tickets);
-    for (i = 0; i < process_array.size; i++)
+    size_t tickets_array_size = 0;
+    struct process_info * tickets[4*process_array_size];  // Vetor para armazenar "tickets" usados no escalonamento
+
+    for (i = 0; i < process_array_size; i++)
     {
-        p_info = vector_get(&process_array, i);
+        p_info = &process_array[i];
         for (j = 0; j <= (p_info->priority); j++) // Atribui uma quantidade de "tickets" com base na prioridade
         {
-            vector_push_back(&tickets, p_info);
+            tickets[tickets_array_size++] = p_info;
         }
     }
-    int n = rand() % tickets.size;  // Escolhe um "ticket" aleatório
-    return vector_get(&tickets, n); // Retorna o processo correspondente ao "ticket"
+    int n = rand() % (int)tickets_array_size;  // Escolhe um "ticket" aleatório
+
+    return tickets[n]; // Retorna o processo correspondente ao "ticket"
 }
 
-// Função para interromper o processo atual usando um sinal
+// Função para interromper o processo atual usando um sinal a cada 6s
 void quantum_escalonador()
 {
     kill(proc_atual->pid, SIGSTOP);      // Envia um sinal para parar o processo atual
     alarm(6);
 }
 
+// Função para ler arquivo a cada 2s e criar um processo, e dar o quantum em 3*2s 
 void read_create_process(){
 
     struct process_info p_info;
-    if( fscanf(fptr, "%50[^ ]%d\n", p_info.name, &p_info.priority) != EOF ){
-        create_process(&p_info);
+    char exec_name[MAX_PROCESS_NAME_SIZE+1] = {0};
+    if( fscanf(fptr, "%250[^ ]%d\n", exec_name, &p_info.priority) != EOF ){
+        time(&(p_info.start_time));
+        create_process(exec_name, &p_info);
         alarm(2);
     }
     else {
-        signal(SIGALRM, quantum_escalonador);
-        alarm(6 - 2*alarm_times);
+        signal(SIGALRM, quantum_escalonador); // quando terminar o arquivo, trocar o alarm para funcao de 6 segundos
+        alarm(6 - 2*alarm_times);            
     }
 
-    if (alarm_times++ == 2)
+    if (alarm_times++ == 2)     // verifica se passou 6 segundos
     {
         alarm_times = 0;
         kill(proc_atual->pid, SIGSTOP);      // Envia um sinal para parar o processo atual
@@ -117,40 +132,40 @@ void executa_escalonador()
     pid_t wait_status, wait_finish, wait_stop;
     struct rusage child_usage;
 
-    while(process_array.size)
+    while(process_array_size)
     {
         proc_atual = escolhe_processo(); // Escolhe um processo
         kill(proc_atual->pid, SIGCONT);  // Envia um sinal para continuar o processo escolhido
-        printf("[Processo %d] executando\n", proc_atual->pid);
+        
+        // printf("[Processo %d] executando\n", proc_atual->pid);
 
         wait_finish = wait4(proc_atual->pid, &status, WUNTRACED, &child_usage);
         if (WIFEXITED(status))
         {
-            time_t finish = time(NULL);
-            // printf("%ld, %ld ", proc_atual->start_time, time(NULL));
-            printf("[Processo %d] Makespan: %.1lfs, Tempo de CPU: %ld.%06lds\n", proc_atual->pid, difftime(finish, proc_atual->start_time) , child_usage.ru_utime.tv_sec, child_usage.ru_utime.tv_usec);
-            remove_process(proc_atual);    // remove processo se terminou
+            double makespan = difftime(time(NULL), proc_atual->start_time);
+            printf("[Processo %d] Makespan: %.1lfs, Tempo de Execucao: %ld.%06lds\n", proc_atual->pid, makespan, child_usage.ru_utime.tv_sec, child_usage.ru_utime.tv_usec);
+            remove_process(proc_atual);    // remove o processo se terminou
         }
     }
 }
 
 int main(int argc, char *argv[])
 {
-    const char *filename = "process_file";
-    fptr = fopen(filename, "r");
+    fptr = fopen(ARQUIVO, "r");
     srand(time(NULL));
-    vector_setup(&process_array, PROCESS_ARRAY_SIZE, sizeof(struct process_info));
-    vector_setup(&tickets, 3 * (PROCESS_ARRAY_SIZE), sizeof(struct process_info *)); // Prepara os "tickets" com um tamanho adequado
-
     signal(SIGALRM, read_create_process);
 
+    start_turnaround = time(NULL);
     read_create_process();
 
     executa_escalonador();
+    
+    alarm(0);
+
+    // printf("Tempo Total: %.1lf\n", difftime(time(NULL), start_turnaround));
 
     fclose(fptr);
-    vector_destroy(&process_array);
-    vector_destroy(&tickets);
 
     return 0;
 }
+
