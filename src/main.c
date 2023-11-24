@@ -152,6 +152,12 @@ void executa_escalonador()
 int main(int argc, char *argv[])
 {
     fptr = fopen(ARQUIVO, "r");
+    
+    if (!fptr){
+        printf("Erro ao abrir: %s\n", ARQUIVO);
+        exit(0);
+    }
+    
     srand(time(NULL));
     signal(SIGALRM, read_create_process);
 
